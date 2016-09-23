@@ -1,0 +1,197 @@
+---
+title: "Predict Business Value of Redhat Customers"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Prepare the data sets
+
+Load the required libraries
+```{r}
+#rm(list=ls(all=T))
+library(data.table)
+library(caret)
+```
+
+load and merge people and activity trainng data set
+```{R, eval=FALSE}
+#ppl <- fread("people.csv")
+act_train <- fread("act_train.csv")
+data_train <- merge(ppl,act_train,by="people_id")
+```
+
+convert the features from char to numeric and outcome from char to factor
+```{r, eval=FALSE}
+data_train <- data.frame(data_train)
+data_train <- data_train[,-c(1,5,42,43)]
+#ata_train = lapply(data_train, as.numeric)
+#data_train = data.frame(data_train)
+#data_train$outcome = as.factor(data_train$outcome)
+```
+
+split the data into type 1 data and non-type1 data
+```{r, eval=FALSE}
+data_type1_tr = subset(data_train,data_train$activity_category=="type 1")
+
+ind_type1 = nearZeroVar(data_type1_tr)
+data_type1_tr = data_type1_tr[,-ind_type1]
+
+data_rest_tr = subset(data_train, data_train$activity_category!="type 1")
+ind_rest = nearZeroVar(data_rest_tr)
+data_rest_tr = data_rest_tr[,-ind_rest]
+```
+
+prepare testing data set
+```{r, eval=FALSE}
+act_test = fread("act_test.csv")
+act_test <- merge(ppl,act_test,by="people_id")
+act_test = data.frame(act_test)
+act_test <- act_test[,-c(1,5,42,43)]
+
+data_type1_te = data.frame(subset(act_test, act_test$activity_category=="type 1"))
+data_type1_te = data_type1_te[,-ind_type1]
+
+data_rest_te = subset(act_test, act_test$activity_category!="type 1")
+data_rest_te = data_rest_te[,-ind_rest]
+
+# convert data from char/logical to int (algorithm runs faster)
+data_type1_tr = lapply(data_type1_tr,as.factor)
+data_type1_tr = lapply(data_type1_tr,as.numeric) #if you don't convert to factor first, you'll get NAs
+data_type1_tr = data.frame(data_type1_tr)
+data_type1_tr$outcome = as.factor(data_type1_tr$outcome)
+
+data_rest_tr = lapply(data_rest_tr,as.factor)
+data_rest_tr = lapply(data_rest_tr, as.numeric)
+data_rest_tr = data.frame(data_rest_tr)
+data_rest_tr$outcome = as.factor(data_rest_tr$outcome)
+
+data_type1_te = lapply(data_type1_te,as.factor)
+data_type1_te = lapply(data_type1_te,as.numeric)
+data_type1_te = data.frame(data_type1_te)
+
+data_rest_te = lapply(data_rest_te, as.factor)
+data_rest_te = lapply(data_rest_te, as.numeric)
+data_rest_te = data.frame(data_rest_te)
+
+rm(ppl)
+rm(act_test)
+rm(data_train)
+```
+
+```{r, echo=FALSE}
+load("data_prep.RData")
+load("rf_random.RData")
+```
+
+## Machine learning part
+load required libraries
+```{r}
+set.seed(123)
+library(caret)
+library(data.table)
+library(ROCR)
+library(OptimalCutpoints)
+```
+
+build a model (random forests) for type1 data
+```{r, eval=FALSE}
+# randomly sample 15000 observations for model building
+# split into training and validation sets 
+X = c(1:dim(data_type1_tr)[1])
+samp = sample(X,15000)
+data_type1_tr = data_type1_tr[samp,]
+inTrain <- createDataPartition(data_type1_tr$outcome, p=0.7, list = FALSE)
+tr_set = data_type1_tr[inTrain,]
+te_set = data_type1_tr[-inTrain,]
+
+control <- trainControl(method="repeatedcv", number=10, search="random")
+start = Sys.time()
+rf_random <- train(outcome~., data=tr_set, method="rf", metric="Accuracy", tuneLength=10, trControl=control)
+end= Sys.time()
+elapsed = end-start
+elapsed
+print(rf_random)
+plot(rf_random)
+```
+
+Do prediction on validation set
+```{r}
+pred_rf = predict(rf_random, te_set)
+confmat = table(pred_rf, te_set$outcome)
+sens = confmat[1,1]/(confmat[1,1]+confmat[1,2])
+spec = confmat[2,2]/(confmat[2,2]+confmat[2,1])
+```
+
+plot the ROC and compute AUC
+```{r}
+result.pr = predict(rf_random, type="prob", newdata=te_set)[,2]
+result.pred = prediction(result.pr, te_set$outcome)
+result.perf = performance(result.pred,"tpr","fpr")
+result.auc = performance(result.pred, "auc")
+ss = performance(result.pred, "sens", "spec")
+idx = which.max(ss@x.values[[1]]+ss@y.values[[1]])
+ss@x.values[idx]
+ss@y.values[idx]
+plot(result.perf,main="ROC Curve for Random Forest",col=2,lwd=2)
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+
+now do the prediction on the test set
+```{r}
+data_type1_te = lapply(data_type1_te, as.numeric)
+data_type1_te = data.frame(data_type1_te)
+str(data_type1_te)
+predict_te = predict(rf_random, data_type1_te)
+```
+
+now build model for the rest of the types (non-type1 data)
+```{r}
+data_rest_tr = lapply(data_rest_tr, as.numeric)
+data_rest_tr = data.frame(data_rest_tr)
+data_rest_tr$outcome = as.factor(data_rest_tr$outcome)
+str(data_rest_tr)
+set.seed(234)
+X = c(1:dim(data_rest_tr)[1])
+samp = sample(X,15000)
+data_rest_tr = data_rest_tr[samp,]
+inTrain <- createDataPartition(data_rest_tr$outcome, p=0.7, list = FALSE)
+tr_set = data_rest_tr[inTrain,]
+te_set = data_rest_tr[-inTrain,]
+control <- trainControl(method="repeatedcv", number=10, search="random")
+start = Sys.time()
+rf_random2 <- train(outcome~., data=tr_set, method="rf", metric="Accuracy", tuneLength=10, trControl=control)
+end= Sys.time()
+print(rf_random2)
+elapsed = end-start
+```
+
+do prediction on validation set
+```{r}
+pred_rf = predict(rf_random2, te_set)
+confmat = table(pred_rf, te_set$outcome)
+sens = confmat[1,1]/(confmat[1,1]+confmat[1,2])
+spec = confmat[2,2]/(confmat[2,2]+confmat[2,1])
+
+# check ROC
+result.pr = predict(rf_random2, type="prob", newdata=te_set)[,2]
+result.pred = prediction(result.pr, te_set$outcome)
+result.perf = performance(result.pred,"tpr","fpr")
+result.auc = performance(result.pred, "auc")
+ss = performance(result.pred, "sens", "spec")
+idx = which.max(ss@x.values[[1]]+ss@y.values[[1]])
+ss@x.values[idx]
+ss@y.values[idx]
+plot(result.perf,main="ROC Curve for Random Forest",col=2,lwd=2)
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+
+now do the prediction on the test set
+```{r}
+data_rest_te = lapply(data_rest_te, as.numeric)
+data_rest_te = data.frame(data_rest_te)
+str(data_rest_te)
+predict_te = predict(rf_random2, data_rest_te)
+```
